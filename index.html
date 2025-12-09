@@ -1,0 +1,258 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="utf-8" />
+  <meta name="viewport" content="width=device-width,initial-scale=1" />
+  <title>Guardian Dashboard</title>
+  <link rel="stylesheet" href="styles.css" />
+  <style>
+    .analytics-box { padding:10px;font-size:14px;line-height:1.5; }
+    .analytics-box .stat { margin-bottom:6px; }
+    .up { color:#27ae60; }
+    .down { color:#c0392b; }
+  </style>
+</head>
+<body>
+  <div class="app">
+
+    <header class="topbar">
+      <div class="brand">Guardian</div>
+      <div class="meta">
+        <div id="deviceOnline" class="meta-item">● Checking…</div>
+        <div id="lastSeen" class="meta-item small">Last: --</div>
+      </div>
+    </header>
+
+    <main class="grid">
+
+      <section class="panel status">
+        <div class="panel-title">Live Status</div>
+
+        <div class="status-row">
+          <div class="status-card" id="fireCard">
+            <div class="s-label">Fire</div>
+            <div class="s-value" id="fireStatus">—</div>
+          </div>
+
+          <div class="status-card" id="gasCard">
+            <div class="s-label">Gas</div>
+            <div class="s-value" id="gasStatus">—</div>
+          </div>
+
+          <div class="status-card">
+            <div class="s-label">Temp</div>
+            <div class="s-value" id="tempStatus">— °C</div>
+          </div>
+
+          <div class="status-card">
+            <div class="s-label">Humidity</div>
+            <div class="s-value" id="humStatus">— %</div>
+          </div>
+        </div>
+
+        <div class="charts">
+          <canvas id="tempChart" height="80"></canvas>
+          <canvas id="humChart" height="60"></canvas>
+        </div>
+
+        <div class="controls">
+
+          <div class="control-group">
+            <div class="control-title">Window</div>
+            <div class="btn-row">
+              <button class="btn primary" onclick="handleCommand(this,'window','open')">Open</button>
+              <button class="btn" onclick="handleCommand(this,'window','close')">Close</button>
+            </div>
+          </div>
+
+          <div class="control-group">
+            <div class="control-title">Pump</div>
+            <div class="btn-row">
+              <button class="btn primary" onclick="handleCommand(this,'pump','on')">On</button>
+              <button class="btn" onclick="handleCommand(this,'pump','off')">Off</button>
+            </div>
+          </div>
+
+          <div class="control-group">
+            <div class="control-title">Siren</div>
+            <div class="btn-row">
+              <button class="btn danger" onclick="handleCommand(this,'siren','on')">On</button>
+              <button class="btn" onclick="handleCommand(this,'siren','off')">Off</button>
+            </div>
+          </div>
+
+        </div>
+      </section>
+
+      <section class="panel incidents">
+        <div class="panel-title">Incident History</div>
+        <div class="incident-list" id="incidentList"></div>
+      </section>
+
+      <section class="panel commands">
+        <div class="panel-title">Recent Commands</div>
+        <div id="commandsBox" class="commands-box">No commands</div>
+      </section>
+
+      <section class="panel analytics">
+        <div class="panel-title">Analytics</div>
+        <div id="analyticsBox" class="analytics-box">Loading…</div>
+      </section>
+
+    </main>
+
+    <footer class="footer">Guardian System Dashboard</footer>
+  </div>
+
+  <script>
+const SUPABASE_URL = "https://dlmyshtnyvjctxfvbmxj.supabase.co";
+const SUPABASE_KEY = "sb_publishable_UvakXOe7PKCI5T6rJMDgQQ_b8BGJpXh";
+const DEVICE_ID = "esp1";
+let lastTimestamp = null;
+
+async function apiGet(path){
+  const r = await fetch(`${SUPABASE_URL}${path}`, {
+    headers: {"apikey": SUPABASE_KEY,"Authorization":`Bearer ${SUPABASE_KEY}`}
+  });
+  return {status:r.status, body:await r.json()};
+}
+
+async function apiPost(path,payload){
+  return await fetch(`${SUPABASE_URL}${path}`, {
+    method:"POST",
+    headers:{
+      "apikey":SUPABASE_KEY,
+      "Authorization":`Bearer ${SUPABASE_KEY}`,
+      "Content-Type":"application/json"
+    },
+    body:JSON.stringify(payload)
+  });
+}
+
+function setOnlineState(timestamp){
+  const now = new Date();
+  const last = new Date(timestamp);
+  const diffMin = (now - last) / 60000;
+  const statusEl = document.getElementById("deviceOnline");
+  const lastSeen = document.getElementById("lastSeen");
+  lastSeen.textContent = `Last: ${last.toLocaleTimeString()}`;
+  if(diffMin < 2){
+    statusEl.textContent = "● Online";
+    statusEl.classList.add("online");
+  } else {
+    statusEl.textContent = "● Offline";
+    statusEl.classList.remove("online");
+  }
+}
+
+async function loadStatus(){
+  const r = await apiGet(`/rest/v1/device_status?deviceId=eq.${DEVICE_ID}&order=timestamp.desc&limit=1`);
+  if(r.status===200 && r.body.length){
+    const s = r.body[0];
+    document.getElementById("fireStatus").textContent = s.fire ? "🔥 FIRE" : "Safe";
+    document.getElementById("gasStatus").textContent  = s.gas ? "⚠ GAS" : "OK";
+    document.getElementById("tempStatus").textContent = `${s.temperature.toFixed(1)} °C`;
+    document.getElementById("humStatus").textContent  = `${s.humidity.toFixed(0)} %`;
+    setOnlineState(s.timestamp);
+    lastTimestamp = s.timestamp;
+  }
+}
+
+async function loadIncidents(){
+  const r = await apiGet(`/rest/v1/incidents?deviceId=eq.${DEVICE_ID}&order=timestamp.desc&limit=100`);
+  const box = document.getElementById("incidentList");
+  box.innerHTML="";
+  if(r.status===200 && r.body.length){
+    r.body.forEach(row=>{
+      const el = document.createElement("div");
+      el.className="incident";
+      el.innerHTML = `
+        <div class="inc-left">
+          <div class="inc-type ${row.type}">${row.type.toUpperCase()}</div>
+          <div class="inc-notes">${row.notes||""}</div>
+        </div>
+        <div class="inc-right">
+          <div class="inc-temp">${row.temperature.toFixed(1)} °C</div>
+          <div class="inc-time">${new Date(row.timestamp).toLocaleString()}</div>
+        </div>`;
+      box.appendChild(el);
+    });
+  } else {
+    box.innerHTML = `<div class="empty">No incidents</div>`;
+  }
+}
+
+async function loadCommands(){
+  const r = await apiGet(`/rest/v1/commands?deviceId=eq.${DEVICE_ID}&order=timestamp.desc&limit=6`);
+  const box = document.getElementById("commandsBox");
+  if(r.status===200 && r.body.length){
+    box.innerHTML = r.body.map(c=>`
+      <div class="cmd-row">
+        <div class="cmd-left">${c.command} <span class="muted">(${c.state})</span></div>
+        <div class="cmd-right">${new Date(c.timestamp).toLocaleTimeString()}</div>
+      </div>`).join("");
+  } else box.innerHTML = "No commands";
+}
+
+async function loadAnalytics(){
+  const r = await apiGet(`/rest/v1/incidents?deviceId=eq.${DEVICE_ID}&order=timestamp.desc&limit=200`);
+  const box = document.getElementById("analyticsBox");
+
+  if(r.status!==200 || !r.body.length){
+    box.innerHTML = "No analytics available.";
+    return;
+  }
+
+  const rows = r.body;
+  const total = rows.length;
+  const fireCount = rows.filter(i=>i.type==="fire").length;
+  const gasCount = rows.filter(i=>i.type==="gas").length;
+  const avgTemp = (rows.reduce((a,b)=>a+b.temperature,0) / total).toFixed(1);
+
+  const first7 = rows.slice(0,7).length;
+  const next7 = rows.slice(7,14).length;
+  let trend = "";
+  if(first7 > next7) trend = `<span class="up">↑ decreasing incidents</span>`;
+  else if(first7 < next7) trend = `<span class="down">↓ increasing incidents</span>`;
+  else trend = `→ stable`;
+
+  box.innerHTML = `
+    <div class="stat"><strong>Total Incidents:</strong> ${total}</div>
+    <div class="stat"><strong>Fire:</strong> ${fireCount} | <strong>Gas:</strong> ${gasCount}</div>
+    <div class="stat"><strong>Average Temperature:</strong> ${avgTemp} °C</div>
+    <div class="stat"><strong>Trend:</strong> ${trend}</div>
+  `;
+}
+
+async function handleCommand(btn,command,state){
+  btn.classList.add("loading");
+  btn.disabled = true;
+
+  const payload = {deviceId:DEVICE_ID,command,state,executed:false};
+  const res = await apiPost("/rest/v1/commands", payload);
+
+  if(res.ok){
+    btn.classList.add("success");
+    await loadCommands();
+  } else {
+    btn.classList.add("error");
+  }
+
+  setTimeout(()=>{
+    btn.classList.remove("loading","success","error");
+    btn.disabled = false;
+  },1200);
+}
+
+async function tick(){
+  await loadStatus();
+  await loadIncidents();
+  await loadCommands();
+  await loadAnalytics();
+}
+
+tick();
+setInterval(tick,3000);
+  </script>
+</body>
+</html>
